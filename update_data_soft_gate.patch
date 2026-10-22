@@ -1,0 +1,54 @@
+--- a/scripts/update_data.py	2026-10-22 18:23:21.305801200 +0800
++++ b/scripts/update_data.py	2026-10-22 18:23:21.623759700 +0800
+@@ -169,6 +169,10 @@
+     ("159915", date(2020, 12, 25)),
+     ("159915", date(2024, 10, 8)),
+ }
++ALLOW_UNREVIEWED_MOVES = os.environ.get("ALLOW_UNREVIEWED_MOVES", "0") == "1"
++MAX_UNREVIEWED_MOVE = float(os.environ.get("MAX_UNREVIEWED_MOVE", "3.0"))
++UNREVIEWED_MOVES: list[dict[str, Any]] = []
++
+ for verified_code, verified_date in EXCHANGE_VERIFIED_LARGE_MOVE_DATES:
+     source_url = SSE_URL if verified_code in SSE_CODES else SZSE_URL
+     KNOWN_LARGE_MOVES[(verified_code, verified_date)] = {
+@@ -502,10 +506,22 @@
+                     and row["quality"] == "official"
+                     and (fund.code, row["date"]) not in KNOWN_LARGE_MOVES
+                 ):
+-                    raise ValueError(
++                    message = (
+                         f"unreviewed >20% share move for {fund.code} on {row['date']}: "
+                         f"{(ratio - 1) * 100:.2f}%"
+                     )
++                    if abs(ratio - 1) > MAX_UNREVIEWED_MOVE or not ALLOW_UNREVIEWED_MOVES:
++                        raise ValueError(message)
++                    UNREVIEWED_MOVES.append(
++                        {
++                            "code": fund.code,
++                            "date": row["date"].isoformat(),
++                            "previous_shares_100m": round(previous, 6),
++                            "current_shares_100m": round(shares, 6),
++                            "change_pct": round((ratio - 1) * 100, 6),
++                        }
++                    )
++                    print(f"WARNING: {message} (published, pending review)", flush=True)
+             previous = shares
+ 
+ 
+@@ -737,6 +753,8 @@
+             "fund_observations": fund_observations,
+             "coverage_ratio": round(fund_observations / expected_observations, 8),
+             "large_move_review_count": len(reviewed_events),
++            "unreviewed_move_count": len(UNREVIEWED_MOVES),
++            "unreviewed_moves": list(UNREVIEWED_MOVES),
+             "selection_as_of": "2026-07-31",
+             "selection_basis": "普通被动沪深300ETF同日份额乘单位净值的估算净资产排名前四",
+             "selection_policy": "固定当前四只主流产品，不构造历史逐日TOP4",
+@@ -795,6 +813,7 @@
+ 
+ def main() -> None:
+     args = parse_args()
++    UNREVIEWED_MOVES.clear()
+     if args.refresh_days < 0:
+         raise ValueError("refresh-days must not be negative")
+     end = parse_date(args.end) if args.end else datetime.now(TIMEZONE).date()
