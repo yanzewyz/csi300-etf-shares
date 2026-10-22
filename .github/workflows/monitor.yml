@@ -1,0 +1,57 @@
+name: Monitor data freshness
+
+on:
+  schedule:
+    # 交易日次日 10:30 北京时间检查线上站点是否已刷新
+    - cron: "30 2 * * 2-6"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check deployed snapshot
+        id: freshness
+        shell: bash
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          python scripts/check_freshness.py \
+            --source "${{ vars.SITE_DATA_URL || 'https://etf.zluna.ai/data/etf-shares.json' }}" \
+            --max-lag-trading-days 1 2>&1 | tee /tmp/freshness.txt
+
+      - name: Open or update stale issue
+        if: steps.freshness.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TITLE="[monitor] 线上数据已停更"
+          BODY="$(printf '线上快照未按预期刷新，请检查 Actions 运行记录：\n\n```\n'; cat /tmp/freshness.txt; printf '\n```\n')"
+          NUMBER="$(gh issue list --state open --search "$TITLE in:title" --json number --jq '.[0].number')"
+          if [ -n "$NUMBER" ]; then
+            gh issue comment "$NUMBER" --body "$BODY"
+          else
+            gh issue create --title "$TITLE" --body "$BODY"
+          fi
+
+      - name: Close issue when healthy again
+        if: steps.freshness.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TITLE="[monitor] 线上数据已停更"
+          NUMBER="$(gh issue list --state open --search "$TITLE in:title" --json number --jq '.[0].number')"
+          if [ -n "$NUMBER" ]; then
+            gh issue close "$NUMBER" --comment "数据新鲜度检查已恢复正常。"
+          fi
